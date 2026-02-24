@@ -55,21 +55,59 @@ IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD  = [0.229, 0.224, 0.225]
 
 
-def get_transforms(mode: str, img_size: int = 224):
+def get_transforms(mode: str, img_size: int = 224, augment_level: str = 'light'):
     """
     Return transforms for a given mode.
 
-    mode='val'  : resize + centre-crop + normalize (no augmentation)
-    mode='train': same as val for v01; augmentation added from v05 onwards
-    mode='test' : same as val
+    mode='val' / 'test': resize + centre-crop + normalize (no augmentation)
+    mode='train':        adds augmentation controlled by augment_level:
+        'none'  - identical to val (used in v01)
+        'light' - horizontal flip + mild colour jitter (v02 default)
+        'heavy' - adds random erasing, rotation, aggressive jitter (v05+)
+
+    Note on horizontal flips for jaguar re-ID:
+        Left and right flanks have DIFFERENT spot patterns, so a horizontal
+        flip creates a plausible-looking but WRONG identity. We include it
+        as a regulariser with low probability (0.3) since it forces the
+        model to use texture geometry rather than global layout, but be
+        aware it can slightly hurt performance on viewpoint-constrained data.
     """
-    base = [
+    val_transforms = [
         transforms.Resize(img_size + 32),
         transforms.CenterCrop(img_size),
         transforms.ToTensor(),
         transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
     ]
-    return transforms.Compose(base)
+
+    if mode in ('val', 'test') or augment_level == 'none':
+        return transforms.Compose(val_transforms)
+
+    if augment_level == 'light':
+        train_transforms = [
+            transforms.Resize(img_size + 32),
+            transforms.RandomCrop(img_size),
+            transforms.RandomHorizontalFlip(p=0.3),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2,
+                                   saturation=0.1, hue=0.05),
+            transforms.ToTensor(),
+            transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+        ]
+    elif augment_level == 'heavy':
+        train_transforms = [
+            transforms.Resize(img_size + 64),
+            transforms.RandomCrop(img_size),
+            transforms.RandomHorizontalFlip(p=0.3),
+            transforms.RandomRotation(degrees=10),
+            transforms.ColorJitter(brightness=0.4, contrast=0.4,
+                                   saturation=0.2, hue=0.1),
+            transforms.ToTensor(),
+            transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+            transforms.RandomErasing(p=0.25, scale=(0.02, 0.15)),
+        ]
+    else:
+        raise ValueError(f'Unknown augment_level: {augment_level}')
+
+    return transforms.Compose(train_transforms)
 
 
 # ---------------------------------------------------------------------------
