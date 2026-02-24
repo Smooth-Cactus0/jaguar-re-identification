@@ -1,0 +1,25 @@
+# Data (too large for GitHub)
+train/
+test/
+
+# Model weights
+models/
+*.pth
+*.pt
+*.ckpt
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Kaggle
+*.zip
