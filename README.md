@@ -15,7 +15,7 @@ We follow an iterative progression from simple to complex, benchmarking each ste
 
 | Version | Approach | CV mAP | Status |
 |---------|----------|--------|--------|
-| v01 | Frozen pretrained embeddings + cosine similarity | — | Planned |
+| v01 | Frozen EfficientNet-B0 + cosine similarity | 0.2781 | Done |
 | v02 | Fine-tuned 31-class classifier embeddings | — | Planned |
 | v03 | ArcFace / CosFace metric learning | — | Planned |
 | v04 | Backbone exploration (EfficientNetV2, ConvNeXt, ViT) | — | Planned |
@@ -37,7 +37,13 @@ We follow an iterative progression from simple to complex, benchmarking each ste
 
 ## Key Results
 
-*Results will be added as each version is completed.*
+**v01 — Frozen EfficientNet-B0 baseline (CV mAP: 0.2781)**
+- ImageNet pretrained features, no fine-tuning, cosine similarity
+- Best identity: Katniss (AP = 0.569) | Worst: Patricia (AP = 0.080)
+- Establishes performance floor; confirms spot-pattern signal exists in ImageNet features
+
+![Per-identity AP](figures/v01_per_identity_ap.png)
+![t-SNE embeddings](figures/v01_tsne.png)
 
 ## Dataset
 
