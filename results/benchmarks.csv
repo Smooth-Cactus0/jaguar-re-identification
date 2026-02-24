@@ -1,0 +1,2 @@
+version,backbone,loss,embedding_dim,img_size,augmentation,cv_map,best_identity,best_ap,worst_identity,worst_ap,notes
+v01,efficientnet_b0,none (frozen),1280,224,none,0.27807,Katniss,0.5694,Patricia,0.07969,"ImageNet pretrained, no fine-tuning"
