@@ -14,7 +14,7 @@ from tqdm import tqdm
 # Embedding extraction
 # ---------------------------------------------------------------------------
 
-def extract_embeddings(model: torch.nn.Module,
+def extract_embeddings(model,
                        dataset,
                        batch_size: int = 64,
                        device: str = 'cpu',
@@ -24,7 +24,10 @@ def extract_embeddings(model: torch.nn.Module,
     Run model forward pass over a dataset and return embeddings as numpy array.
 
     Args:
-        model:        PyTorch model in eval mode, output is (B, D) embeddings
+        model:        nn.Module OR any callable(batch_tensor) -> embedding_tensor.
+                      If nn.Module, automatically moved to device and set to eval.
+                      If a lambda/function, caller is responsible for device placement
+                      and eval mode (the model it wraps must already be on device).
         dataset:      JaguarDataset (or any Dataset returning images)
         batch_size:   images per forward pass
         device:       'cpu' or 'cuda'
@@ -36,7 +39,8 @@ def extract_embeddings(model: torch.nn.Module,
     """
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
                         num_workers=0, pin_memory=(device == 'cuda'))
-    model  = model.to(device).eval()
+    if isinstance(model, torch.nn.Module):
+        model = model.to(device).eval()
 
     all_embs = []
     with torch.no_grad():
