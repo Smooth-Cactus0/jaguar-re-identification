@@ -19,10 +19,13 @@ Run on Kaggle (T4 or P100 GPU):
 import sys, os, time
 
 # -- Clone repo and add src/ to path -----------------------------------------
+# Always pull latest — avoids stale src/ from a previous aborted session.
 REPO_URL = 'https://github.com/Smooth-Cactus0/jaguar-re-identification.git'
 REPO_DIR = '/kaggle/working/repo'
 
-if not os.path.exists(REPO_DIR):
+if os.path.exists(REPO_DIR):
+    os.system(f'git -C {REPO_DIR} pull --ff-only')
+else:
     os.system(f'git clone {REPO_URL} {REPO_DIR}')
 sys.path.insert(0, REPO_DIR)
 
