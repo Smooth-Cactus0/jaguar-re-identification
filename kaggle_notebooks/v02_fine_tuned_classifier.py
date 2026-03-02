@@ -16,8 +16,7 @@ Run on Kaggle (T4 or P100 GPU):
   Outputs land in /kaggle/working/ — download the zip.
 """
 
-import sys, io, os, time
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+import sys, os, time
 
 # -- Clone repo and add src/ to path -----------------------------------------
 REPO_URL = 'https://github.com/Smooth-Cactus0/jaguar-re-identification.git'
