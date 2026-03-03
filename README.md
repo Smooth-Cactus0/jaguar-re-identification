@@ -16,8 +16,8 @@ We follow an iterative progression from simple to complex, benchmarking each ste
 | Version | Approach | CV mAP | Status |
 |---------|----------|--------|--------|
 | v01 | Frozen EfficientNet-B0 + cosine similarity | 0.2781 | Done |
-| v02 | Fine-tuned 31-class classifier embeddings | — | Planned |
-| v03 | ArcFace / CosFace metric learning | — | Planned |
+| v02 | Fine-tuned 31-class classifier embeddings | 0.4821 | Done |
+| v03 | ArcFace / CosFace metric learning | — | In Progress |
 | v04 | Backbone exploration (EfficientNetV2, ConvNeXt, ViT) | — | Planned |
 | v05 | Augmentation + Test-Time Augmentation | — | Planned |
 | v06 | Hybrid: deep embeddings + engineered features → XGBoost/LightGBM | — | Planned |
@@ -36,6 +36,16 @@ We follow an iterative progression from simple to complex, benchmarking each ste
 ```
 
 ## Key Results
+
+**v02 — Fine-tuned 31-class classifier (CV mAP: 0.4821 val / 0.5258 full train)**
+- Two-stage fine-tuning: 5 epochs head-only + 25 epochs full fine-tune
+- Differential LR: backbone 1e-4, head 1e-3 | CrossEntropy with label_smoothing=0.1
+- Leaderboard: 0.414 | Best identity: Tomas | Worst: Saseka
+- +73% improvement over frozen baseline
+
+![Training curves](figures/v02_training_curves.png)
+![Per-identity AP v02](figures/v02_per_identity_ap.png)
+![t-SNE v02](figures/v02_tsne.png)
 
 **v01 — Frozen EfficientNet-B0 baseline (CV mAP: 0.2781)**
 - ImageNet pretrained features, no fine-tuning, cosine similarity
