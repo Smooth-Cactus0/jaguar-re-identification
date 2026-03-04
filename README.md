@@ -17,8 +17,8 @@ We follow an iterative progression from simple to complex, benchmarking each ste
 |---------|----------|--------|--------|
 | v01 | Frozen EfficientNet-B0 + cosine similarity | 0.2781 | Done |
 | v02 | Fine-tuned 31-class classifier embeddings | 0.4821 | Done |
-| v03 | ArcFace / CosFace metric learning | — | In Progress |
-| v04 | Backbone exploration (EfficientNetV2, ConvNeXt, ViT) | — | Planned |
+| v03 | ArcFace / CosFace metric learning | 0.6829 (full) | Done |
+| v04 | Backbone exploration (EfficientNetV2, ConvNeXt, ViT) | — | In Progress |
 | v05 | Augmentation + Test-Time Augmentation | — | Planned |
 | v06 | Hybrid: deep embeddings + engineered features → XGBoost/LightGBM | — | Planned |
 | v07 | Ensemble + final optimization | — | Planned |
@@ -36,6 +36,15 @@ We follow an iterative progression from simple to complex, benchmarking each ste
 ```
 
 ## Key Results
+
+**v03 — ArcFace metric learning (CV mAP: 0.6829 full train / 0.4431 val fold)**
+- EfficientNet-B0 + projection 1280→512 (Linear+BN) + ArcFace(m=0.5, s=30)
+- Two-stage: 5 epochs head-only + 30 epochs full fine-tune | backbone lr=1e-5, head lr=1e-3
+- Leaderboard: 0.609 (+47% over v02) | Best: Lua | Worst: Ipepo
+
+![Training curves v03](figures/v03_training_curves.png)
+![Per-identity AP v03](figures/v03_per_identity_ap.png)
+![t-SNE v03](figures/v03_tsne.png)
 
 **v02 — Fine-tuned 31-class classifier (CV mAP: 0.4821 val / 0.5258 full train)**
 - Two-stage fine-tuning: 5 epochs head-only + 25 epochs full fine-tune
