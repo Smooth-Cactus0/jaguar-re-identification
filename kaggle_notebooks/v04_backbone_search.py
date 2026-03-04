@@ -5,17 +5,21 @@ Compare three backbones using the same ArcFace setup as v03.
 Goal: find which architecture captures jaguar spot patterns best.
 
 Backbones tested:
-  efficientnetv2_s   — successor to EfficientNet-B0, Fused-MBConv, ~22M params
-  convnext_small     — large 7x7 depthwise conv, better texture receptive field
-  vit_small_patch16_224 — global attention, holistic pattern matching
+  efficientnetv2_s      — Fused-MBConv, ~22M params, trains faster than B0
+  convnext_small        — 7x7 depthwise conv, large texture receptive field
+  vit_small_patch16_224 — global self-attention, holistic pattern matching
 
-All use:
+Performance optimisations vs v03:
+  1. Image pre-cache: all 1895 images loaded to RAM once (PNG decode happens
+     once, not once per epoch per worker). Eliminates the disk I/O bottleneck
+     that made v02/v03 take 8-10h for ~1895 small images.
+  2. Mixed precision (AMP): torch.cuda.amp halves memory/compute on T4/P100.
+  Together these should cut wall-clock time to ~1.5-2h per backbone.
+
+All backbones:
   ArcFace(m=0.5, s=30), embedding_dim=512, img_size=224
-  Stage 1: 5 epochs frozen backbone
-  Stage 2: 20 epochs full fine-tune (shorter than v03 to fit 3 models in one run)
-
-Best backbone by val mAP is then retrained on full data for submission.
-Outputs include per-backbone mAP comparison + progression chart.
+  Stage 1: 5 epochs frozen | Stage 2: 25 epochs full fine-tune
+  Best backbone selected by val mAP, retrained on full data for submission.
 """
 
 import sys, os, time
@@ -38,11 +42,13 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
+from torch.cuda.amp import GradScaler, autocast
 from pathlib import Path
 import warnings
 warnings.filterwarnings('ignore')
 
-from src.data      import JaguarDataset, get_transforms, encode_labels, get_identity_splits
+from src.data      import (JaguarDataset, get_transforms, encode_labels,
+                            get_identity_splits, build_image_cache)
 from src.models    import EmbeddingModel
 from src.losses    import ArcFaceLoss
 from src.inference import extract_embeddings, make_submission
@@ -58,17 +64,18 @@ OUT_DIR.mkdir(exist_ok=True)
 # -- Shared config -------------------------------------------------------------
 EMBEDDING_DIM   = 512
 IMG_SIZE        = 224
-BATCH_SIZE      = 32   # smaller batch — ViT uses more memory
+BATCH_SIZE      = 64   # AMP enables larger batches; 64 fits all backbones
 N_CLASSES       = 31
 LR_HEAD         = 1e-3
 LR_BACKBONE     = 1e-5
 EPOCHS_S1       = 5
-EPOCHS_S2       = 20   # shorter — running 3 backbones in one session
+EPOCHS_S2       = 25
 WEIGHT_DECAY    = 1e-4
 ARC_MARGIN      = 0.5
 ARC_SCALE       = 30.0
 GRAD_CLIP_NORM  = 1.0
 DEVICE          = 'cuda' if torch.cuda.is_available() else 'cpu'
+USE_AMP         = DEVICE == 'cuda'   # mixed precision only on GPU
 VERSION         = 'v04'
 CV_FOLD         = 0
 
@@ -80,10 +87,11 @@ BACKBONES = [
 
 print('\n' + '='*60)
 print(f'  {VERSION}: Backbone Exploration')
-print(f'  Comparing: {", ".join(BACKBONES)}')
-print(f'  ArcFace : m={ARC_MARGIN}, s={ARC_SCALE}')
-print(f'  Device  : {DEVICE}')
-print(f'  Epochs  : S1={EPOCHS_S1} + S2={EPOCHS_S2} per backbone')
+print(f'  Comparing : {", ".join(BACKBONES)}')
+print(f'  ArcFace   : m={ARC_MARGIN}, s={ARC_SCALE}')
+print(f'  Device    : {DEVICE}  |  AMP: {USE_AMP}')
+print(f'  Epochs    : S1={EPOCHS_S1} + S2={EPOCHS_S2} per backbone')
+print(f'  Batch size: {BATCH_SIZE}')
 print('='*60)
 
 # -- Load data -----------------------------------------------------------------
@@ -95,26 +103,44 @@ labels, label_to_idx, idx_to_label = encode_labels(train_df['ground_truth'])
 for fold, train_idx, val_idx in get_identity_splits(train_df, n_splits=5):
     if fold == CV_FOLD:
         break
+print(f'  Train fold: {len(train_idx)} | Val fold: {len(val_idx)}')
 
-tf_train = get_transforms(mode='train', img_size=IMG_SIZE)
-tf_val   = get_transforms(mode='val',   img_size=IMG_SIZE)
+# -- Pre-cache ALL images to RAM (eliminates PNG decode bottleneck) ------------
+print('\n[2] Pre-caching images to RAM...')
+t_cache = time.time()
+all_train_files  = train_df['filename'].tolist()
+test_files_flat  = sorted(pd.unique(test_df[['query_image', 'gallery_image']].values.ravel()))
+train_cache = build_image_cache(all_train_files, TRAIN_DIR, img_size=IMG_SIZE, verbose=True)
+test_cache  = build_image_cache(test_files_flat,  TEST_DIR,  img_size=IMG_SIZE, verbose=True)
+print(f'  Cache built in {time.time()-t_cache:.0f}s')
 
+# Transforms: cached=True skips Resize (already done in build_image_cache)
+tf_train = get_transforms(mode='train', img_size=IMG_SIZE, cached=True)
+tf_val   = get_transforms(mode='val',   img_size=IMG_SIZE, cached=True)
+
+# Build datasets (all share the same cache — zero extra memory overhead)
 train_ds = JaguarDataset(
     filenames=train_df['filename'].iloc[train_idx].tolist(),
-    img_dir=TRAIN_DIR, labels=labels[train_idx], transform=tf_train)
+    img_dir=TRAIN_DIR, labels=labels[train_idx], transform=tf_train,
+    image_cache=train_cache)
 val_ds = JaguarDataset(
     filenames=train_df['filename'].iloc[val_idx].tolist(),
-    img_dir=TRAIN_DIR, labels=labels[val_idx], transform=tf_val)
-
-train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,
-                          num_workers=2, pin_memory=True)
-val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False,
-                          num_workers=2, pin_memory=True)
-print(f'  Train: {len(train_ds)} | Val: {len(val_ds)}')
-
+    img_dir=TRAIN_DIR, labels=labels[val_idx], transform=tf_val,
+    image_cache=train_cache)
 full_ds = JaguarDataset(
-    filenames=train_df['filename'].tolist(),
-    img_dir=TRAIN_DIR, labels=labels, transform=tf_val)
+    filenames=all_train_files, img_dir=TRAIN_DIR, labels=labels,
+    transform=tf_val, image_cache=train_cache)
+full_train_ds = JaguarDataset(
+    filenames=all_train_files, img_dir=TRAIN_DIR, labels=labels,
+    transform=tf_train, image_cache=train_cache)
+test_ds_all = JaguarDataset(
+    filenames=test_files_flat, img_dir=TEST_DIR, labels=None,
+    transform=tf_val, image_cache=test_cache)
+
+train_loader     = DataLoader(train_ds,     batch_size=BATCH_SIZE, shuffle=True,
+                               num_workers=2, pin_memory=True)
+val_loader       = DataLoader(val_ds,       batch_size=BATCH_SIZE, shuffle=False,
+                               num_workers=2, pin_memory=True)
 
 
 # -- Model + training helpers --------------------------------------------------
@@ -142,7 +168,9 @@ class ArcFaceModel(nn.Module):
             p.requires_grad_(True)
 
 
-def run_epoch(model, arcface_loss, loader, optimizer, scheduler, is_train, device):
+def run_epoch(model, arcface_loss, loader, optimizer, scheduler,
+              is_train, device, scaler):
+    """Single epoch with AMP (no-op scaler when USE_AMP=False)."""
     model.train(is_train)
     arcface_loss.train(is_train)
     total_loss, n = 0.0, 0
@@ -152,13 +180,17 @@ def run_epoch(model, arcface_loss, loader, optimizer, scheduler, is_train, devic
             imgs, targets = imgs.to(device), targets.to(device)
             if is_train:
                 optimizer.zero_grad()
-            loss = arcface_loss(model(imgs), targets)
+            with autocast(enabled=USE_AMP):
+                embs = model(imgs)
+                loss = arcface_loss(embs, targets)
             if is_train:
-                loss.backward()
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(
                     list(model.parameters()) + list(arcface_loss.parameters()),
                     max_norm=GRAD_CLIP_NORM)
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
                 scheduler.step()
             total_loss += loss.item() * len(imgs)
             n          += len(imgs)
@@ -166,17 +198,18 @@ def run_epoch(model, arcface_loss, loader, optimizer, scheduler, is_train, devic
 
 
 def train_backbone(backbone_name):
-    """Train one backbone end-to-end; return (val_map, full_map, model)."""
-    print(f'\n{"="*50}')
-    print(f'  Training: {backbone_name}')
-    print(f'{"="*50}')
+    """Full two-stage ArcFace training for one backbone. Returns best val mAP."""
+    print(f'\n{"="*55}')
+    print(f'  Backbone: {backbone_name}')
+    print(f'{"="*55}')
 
     model   = ArcFaceModel(backbone_name, EMBEDDING_DIM).to(DEVICE)
     arcface = ArcFaceLoss(EMBEDDING_DIM, N_CLASSES, ARC_MARGIN, ARC_SCALE).to(DEVICE)
+    scaler  = GradScaler(enabled=USE_AMP)
     n_total = sum(p.numel() for p in model.parameters())
-    print(f'  Backbone dim: {model.backbone.out_dim} | Total params: {n_total:,}')
+    print(f'  Native dim: {model.backbone.out_dim} | Total params: {n_total:,}')
 
-    # Stage 1
+    # Stage 1: head + ArcFace only
     model.freeze_backbone()
     head_params = list(filter(lambda p: p.requires_grad, model.parameters())) + \
                   list(arcface.parameters())
@@ -185,11 +218,11 @@ def train_backbone(backbone_name):
                       steps_per_epoch=len(train_loader), epochs=EPOCHS_S1)
     for ep in range(1, EPOCHS_S1 + 1):
         t0 = time.time()
-        tr = run_epoch(model, arcface, train_loader, opt1, sch1, True,  DEVICE)
-        va = run_epoch(model, arcface, val_loader,   opt1, sch1, False, DEVICE)
+        tr = run_epoch(model, arcface, train_loader, opt1, sch1, True,  DEVICE, scaler)
+        va = run_epoch(model, arcface, val_loader,   opt1, sch1, False, DEVICE, scaler)
         print(f'  S1 ep {ep}/{EPOCHS_S1} | loss {tr:.4f}/{va:.4f} | {time.time()-t0:.0f}s')
 
-    # Stage 2
+    # Stage 2: full fine-tune
     model.unfreeze_backbone()
     opt2 = AdamW([
         {'params': model.backbone.parameters(), 'lr': LR_BACKBONE},
@@ -199,15 +232,14 @@ def train_backbone(backbone_name):
     sch2 = OneCycleLR(opt2, max_lr=[LR_BACKBONE, LR_HEAD, LR_HEAD],
                       steps_per_epoch=len(train_loader), epochs=EPOCHS_S2)
 
-    best_val_map = 0.0
-    best_state   = None
+    best_val_map  = 0.0
+    best_state    = None
 
     for ep in range(1, EPOCHS_S2 + 1):
         t0 = time.time()
-        tr = run_epoch(model, arcface, train_loader, opt2, sch2, True,  DEVICE)
-        va = run_epoch(model, arcface, val_loader,   opt2, sch2, False, DEVICE)
+        tr = run_epoch(model, arcface, train_loader, opt2, sch2, True,  DEVICE, scaler)
+        va = run_epoch(model, arcface, val_loader,   opt2, sch2, False, DEVICE, scaler)
 
-        # Check val mAP every 5 epochs and at end
         if ep % 5 == 0 or ep == EPOCHS_S2:
             val_embs    = extract_embeddings(model, val_ds, BATCH_SIZE, DEVICE,
                                              l2_normalise=False, desc='')
@@ -219,9 +251,10 @@ def train_backbone(backbone_name):
                 best_state   = {k: v.cpu().clone() for k, v in model.state_dict().items()}
                 marker = ' **'
             print(f'  S2 ep {ep}/{EPOCHS_S2} | loss {tr:.4f}/{va:.4f} | '
-                  f'val_mAP {vm:.4f}{marker} | {time.time()-t0:.0f}s')
+                  f'mAP {vm:.4f}{marker} | {time.time()-t0:.0f}s')
         else:
-            print(f'  S2 ep {ep}/{EPOCHS_S2} | loss {tr:.4f}/{va:.4f} | {time.time()-t0:.0f}s')
+            print(f'  S2 ep {ep}/{EPOCHS_S2} | loss {tr:.4f}/{va:.4f} | '
+                  f'{time.time()-t0:.0f}s')
 
     model.load_state_dict(best_state)
 
@@ -229,29 +262,32 @@ def train_backbone(backbone_name):
     full_embs    = extract_embeddings(model, full_ds, BATCH_SIZE, DEVICE,
                                       l2_normalise=False, desc='Full train')
     full_results = compute_map(full_embs, labels)
-    print(f'\n  {backbone_name}: val_mAP={best_val_map:.4f}, full_mAP={full_results["map"]:.4f}')
+    print(f'  {backbone_name}: val_mAP={best_val_map:.4f}, full_mAP={full_results["map"]:.4f}')
 
-    return best_val_map, full_results, model, arcface
+    return best_val_map, full_results, model
 
 
 # -- Run backbone search -------------------------------------------------------
-results_all = {}  # backbone -> (val_map, full_results, model)
+results_all  = {}   # backbone -> (val_map, full_results, model)
+t_total = time.time()
 
 for backbone in BACKBONES:
-    val_map, full_results, model, arcface = train_backbone(backbone)
-    results_all[backbone] = (val_map, full_results, model, arcface)
+    val_map, full_results, model = train_backbone(backbone)
+    results_all[backbone] = (val_map, full_results, model)
     # Free GPU memory before next backbone
-    del model, arcface
+    del model
     torch.cuda.empty_cache()
+
+print(f'\nAll backbones trained in {(time.time()-t_total)/60:.0f} min')
 
 # -- Summary -------------------------------------------------------------------
 print(f'\n{"="*60}')
 print(f'  {VERSION} — Backbone Comparison Summary')
 print(f'  {"Backbone":<30} {"Val mAP":>8} {"Full mAP":>10}')
-print(f'  {"-"*50}')
+print(f'  {"-"*52}')
 best_backbone = None
 best_val = 0.0
-for bb, (vm, fr, _, _) in results_all.items():
+for bb, (vm, fr, _) in results_all.items():
     marker = ' <-- best' if vm == max(v[0] for v in results_all.values()) else ''
     print(f'  {bb:<30} {vm:>8.4f} {fr["map"]:>10.4f}{marker}')
     if vm > best_val:
@@ -259,8 +295,8 @@ for bb, (vm, fr, _, _) in results_all.items():
         best_backbone = bb
 print(f'{"="*60}')
 
-# Save benchmark row for each backbone
-for bb, (vm, fr, _, _) in results_all.items():
+# Save benchmark rows
+for bb, (vm, fr, _) in results_all.items():
     save_benchmark(
         OUT_DIR / 'benchmarks_v04.csv',
         {
@@ -278,47 +314,36 @@ for bb, (vm, fr, _, _) in results_all.items():
                                                key=fr['per_identity_ap'].get)],
             'epochs_s1':      EPOCHS_S1,
             'epochs_s2':      EPOCHS_S2,
-            'notes':          f'Backbone search; best={best_backbone}',
+            'notes':          f'Backbone search; best={best_backbone}; AMP+cache',
         }
     )
 
 
-# -- Visualisations: backbone comparison bar chart -----------------------------
-print('\n[Vis] Generating backbone comparison charts...')
+# -- Visualisations ------------------------------------------------------------
+print('\n[Vis] Generating backbone comparison chart...')
 
-# Reload best model for final viz (freed GPU memory above)
-print(f'  Re-training best backbone ({best_backbone}) for visualisation...')
-# (We saved best_state internally per backbone; re-train briefly for t-SNE)
-# Actually: use stored full_results from the loop for per-identity AP charts
-# No need to re-extract embeddings — we saved full_results above
-
-# Per-identity AP for each backbone (using full_results)
-# Use best backbone's per-identity for the detailed chart; summary for others
-best_per_id = {idx_to_label[k]: v
-               for k, v in results_all[best_backbone][1]['per_identity_ap'].items()}
-v03_ref = 0.68287   # v03 full-train mAP reference
+bbs   = list(results_all.keys())
+vmaps = [results_all[b][0]       for b in bbs]
+fmaps = [results_all[b][1]['map'] for b in bbs]
+x     = np.arange(len(bbs))
+w     = 0.35
 
 fig, axes = plt.subplots(1, 2, figsize=(16, 5))
 
-# Left: backbone summary bar chart
-bbs    = list(results_all.keys())
-vmaps  = [results_all[b][0] for b in bbs]
-fmaps  = [results_all[b][1]['map'] for b in bbs]
-x      = np.arange(len(bbs))
-w      = 0.35
-
 axes[0].bar(x - w/2, vmaps, w, color='lightsteelblue', label='Val fold mAP')
 axes[0].bar(x + w/2, fmaps, w, color='steelblue',      label='Full train mAP')
-axes[0].axhline(v03_ref, color='coral', linestyle='--', linewidth=1.5,
-                label=f'v03 full mAP={v03_ref:.4f}')
+axes[0].axhline(0.68287, color='coral', linestyle='--', linewidth=1.5,
+                label='v03 EfficientNet-B0 (full mAP=0.683)')
 axes[0].set_xticks(x)
 axes[0].set_xticklabels([b.replace('_', '\n') for b in bbs], fontsize=9)
 axes[0].set_ylabel('Identity-balanced mAP'); axes[0].set_ylim(0, 1)
 axes[0].set_title('v04: Backbone Comparison', fontsize=12, fontweight='bold')
 axes[0].legend()
 
-# Right: per-identity AP for best backbone
-ids_sorted = sorted(best_per_id.keys(), key=lambda x: -best_per_id[x])
+# Per-identity AP for the best backbone
+best_per_id = {idx_to_label[k]: v
+               for k, v in results_all[best_backbone][1]['per_identity_ap'].items()}
+ids_sorted  = sorted(best_per_id, key=lambda x: -best_per_id[x])
 xp = np.arange(len(ids_sorted))
 axes[1].bar(xp, [best_per_id[i] for i in ids_sorted], color='steelblue')
 axes[1].axhline(results_all[best_backbone][1]['map'], color='navy',
@@ -327,7 +352,7 @@ axes[1].axhline(results_all[best_backbone][1]['map'], color='navy',
 axes[1].set_xticks(xp)
 axes[1].set_xticklabels(ids_sorted, rotation=45, ha='right', fontsize=7)
 axes[1].set_ylabel('AP'); axes[1].set_ylim(0, 1)
-axes[1].set_title(f'Best backbone: {best_backbone}', fontsize=11, fontweight='bold')
+axes[1].set_title(f'Per-identity AP: {best_backbone}', fontsize=11, fontweight='bold')
 axes[1].legend(fontsize=9)
 
 plt.suptitle('v04: Backbone Search Results', fontsize=13, fontweight='bold')
@@ -340,14 +365,12 @@ print('  Saved -> v04_backbone_comparison.png')
 # -- Full retrain with best backbone + submission ------------------------------
 print(f'\n[Final] Retraining best backbone ({best_backbone}) on ALL data...')
 
-full_train_ds = JaguarDataset(
-    filenames=train_df['filename'].tolist(),
-    img_dir=TRAIN_DIR, labels=labels, transform=tf_train)
 full_loader = DataLoader(full_train_ds, batch_size=BATCH_SIZE, shuffle=True,
                          num_workers=2, pin_memory=True)
 
 model_final   = ArcFaceModel(best_backbone, EMBEDDING_DIM).to(DEVICE)
 arcface_final = ArcFaceLoss(EMBEDDING_DIM, N_CLASSES, ARC_MARGIN, ARC_SCALE).to(DEVICE)
+scaler_final  = GradScaler(enabled=USE_AMP)
 
 # Stage 1
 model_final.freeze_backbone()
@@ -357,7 +380,8 @@ opt_f1 = AdamW(head_f, lr=LR_HEAD, weight_decay=WEIGHT_DECAY)
 sch_f1 = OneCycleLR(opt_f1, max_lr=LR_HEAD,
                     steps_per_epoch=len(full_loader), epochs=EPOCHS_S1)
 for ep in range(1, EPOCHS_S1 + 1):
-    loss = run_epoch(model_final, arcface_final, full_loader, opt_f1, sch_f1, True, DEVICE)
+    loss = run_epoch(model_final, arcface_final, full_loader,
+                     opt_f1, sch_f1, True, DEVICE, scaler_final)
     print(f'  Full S1 ep {ep}/{EPOCHS_S1} | loss {loss:.4f}')
 
 # Stage 2
@@ -370,19 +394,16 @@ opt_f2 = AdamW([
 sch_f2 = OneCycleLR(opt_f2, max_lr=[LR_BACKBONE, LR_HEAD, LR_HEAD],
                     steps_per_epoch=len(full_loader), epochs=EPOCHS_S2)
 for ep in range(1, EPOCHS_S2 + 1):
-    loss = run_epoch(model_final, arcface_final, full_loader, opt_f2, sch_f2, True, DEVICE)
+    loss = run_epoch(model_final, arcface_final, full_loader,
+                     opt_f2, sch_f2, True, DEVICE, scaler_final)
     if ep % 5 == 0:
         print(f'  Full S2 ep {ep}/{EPOCHS_S2} | loss {loss:.4f}')
 
-# Test submission
-test_filenames = sorted(pd.unique(
-    test_df[['query_image', 'gallery_image']].values.ravel()))
-test_ds = JaguarDataset(
-    filenames=test_filenames, img_dir=TEST_DIR, labels=None, transform=tf_val)
+# Submission
 model_final.eval()
-test_embs = extract_embeddings(model_final, test_ds, BATCH_SIZE, DEVICE,
+test_embs = extract_embeddings(model_final, test_ds_all, BATCH_SIZE, DEVICE,
                                 l2_normalise=False, desc='Test')
-fname_to_idx = {f: i for i, f in enumerate(test_filenames)}
+fname_to_idx = {f: i for i, f in enumerate(test_files_flat)}
 make_submission(
     test_df=test_df, test_embeddings=test_embs,
     filename_to_idx=fname_to_idx,
@@ -392,9 +413,10 @@ torch.save(model_final.state_dict(), OUT_DIR / f'model_{VERSION}_{best_backbone}
 
 print(f'\n{"="*60}')
 print(f'  {VERSION} COMPLETE')
-print(f'  Best backbone : {best_backbone}  (val_mAP={best_val:.4f})')
-for bb, (vm, fr, _, _) in results_all.items():
+print(f'  Best backbone: {best_backbone}  (val_mAP={best_val:.4f})')
+for bb, (vm, fr, _) in results_all.items():
     print(f'  {bb:<30}: val={vm:.4f}  full={fr["map"]:.4f}')
-print(f'  Outputs in    : {OUT_DIR}')
+print(f'  Total time   : {(time.time()-t_total)/60:.0f} min')
+print(f'  Outputs in   : {OUT_DIR}')
 print(f'{"="*60}')
 print('\nDownload /kaggle/working/output/ zip and push figures + results to GitHub.')
