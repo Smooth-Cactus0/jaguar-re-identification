@@ -80,7 +80,7 @@ VERSION         = 'v04'
 CV_FOLD         = 0
 
 BACKBONES = [
-    'efficientnetv2_s',
+    'tf_efficientnetv2_s',    # TF-converted weights, reliably available in all timm versions
     'convnext_small',
     'vit_small_patch16_224',
 ]
