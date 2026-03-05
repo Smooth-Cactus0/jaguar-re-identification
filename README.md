@@ -19,7 +19,7 @@ We follow an iterative progression from simple to complex, benchmarking each ste
 | v02 | Fine-tuned 31-class classifier embeddings | 0.4821 | Done |
 | v03 | ArcFace / CosFace metric learning | 0.6829 (full) | Done |
 | v04 | Backbone exploration (EfficientNetV2, ConvNeXt, ViT) | 0.8382 (ConvNeXt full) | Done |
-| v05 | Augmentation + Test-Time Augmentation | — | In Progress |
+| v05 | Augmentation + Test-Time Augmentation | 0.8576 (full) | Done |
 | v06 | Hybrid: deep embeddings + engineered features → XGBoost/LightGBM | — | Planned |
 | v07 | Ensemble + final optimization | — | Planned |
 
@@ -36,6 +36,16 @@ We follow an iterative progression from simple to complex, benchmarking each ste
 ```
 
 ## Key Results
+
+**v05 — Heavy augmentation + 5-view TTA (full mAP: 0.8576)**
+- ConvNeXt-Small + heavy aug: RandomRotation(10°), aggressive ColorJitter, RandomErasing(p=0.25)
+- 5-view TTA: centre crop, hflip, top-left, top-right, bottom-centre crops → averaged embeddings
+- TTA boost: val mAP 0.4848 → 0.4916 (+0.007) | Full train mAP: 0.8576 (+0.019 over v04)
+- Leaderboard: **0.795** (marginal regression vs v04 0.797) | Best: Marcela | Worst: Akaloi
+- Heavy aug may slightly over-regularise for this small dataset (1,895 images)
+
+![Per-identity AP v05](figures/v05_per_identity_ap.png)
+![t-SNE v05](figures/v05_tsne.png)
 
 **v04 — Backbone search: ConvNeXt-Small wins (full mAP: 0.8382)**
 - Compared tf_efficientnetv2_s (0.689), convnext_small (0.838), vit_small_patch16_224 (0.562)
