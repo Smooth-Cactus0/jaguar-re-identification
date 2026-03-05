@@ -2,3 +2,6 @@ version,backbone,loss,embedding_dim,img_size,augmentation,cv_map,best_identity,b
 v01,efficientnet_b0,none (frozen),1280,224,none,0.27807,Katniss,0.5694,Patricia,0.07969,"ImageNet pretrained, no fine-tuning"
 v02,efficientnet_b0,CrossEntropy (label_smooth=0.1),1280,224,none (v05 adds augmentation),0.48208,Tomas,,Saseka,,"Two-stage fine-tune, differential LR; cv_map_full=0.52582"
 v03,efficientnet_b0,"ArcFace (m=0.5, s=30.0)",512,224,none (v05 adds augmentation),0.44305,Lua,,Ipepo,,"ArcFace, proj 512-dim BN, differential LR, best by val mAP"
+v04_tf,tf_efficientnetv2_s,"ArcFace (m=0.5, s=30.0)",512,224,none (v05 adds augmentation),0.38191,Lua,,Ipepo,,Backbone search; best=convnext_small; AMP+cache
+v04_convnext,convnext_small,"ArcFace (m=0.5, s=30.0)",512,224,none (v05 adds augmentation),0.50456,Estella,,Saseka,,Backbone search; best=convnext_small; AMP+cache
+v04_vit,vit_small_patch16_224,"ArcFace (m=0.5, s=30.0)",512,224,none (v05 adds augmentation),0.50138,Lua,,Ipepo,,Backbone search; best=convnext_small; AMP+cache

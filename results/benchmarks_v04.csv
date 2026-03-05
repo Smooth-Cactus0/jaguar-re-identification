@@ -1,0 +1,4 @@
+version,backbone,loss,embedding_dim,img_size,augmentation,cv_map_val,cv_map_full,best_identity,worst_identity,epochs_s1,epochs_s2,notes
+v04_tf,tf_efficientnetv2_s,"ArcFace (m=0.5, s=30.0)",512,224,none (v05 adds augmentation),0.38191,0.68887,Lua,Ipepo,5,25,Backbone search; best=convnext_small; AMP+cache
+v04_convnext,convnext_small,"ArcFace (m=0.5, s=30.0)",512,224,none (v05 adds augmentation),0.50456,0.83818,Estella,Saseka,5,25,Backbone search; best=convnext_small; AMP+cache
+v04_vit,vit_small_patch16_224,"ArcFace (m=0.5, s=30.0)",512,224,none (v05 adds augmentation),0.50138,0.5616,Lua,Ipepo,5,25,Backbone search; best=convnext_small; AMP+cache

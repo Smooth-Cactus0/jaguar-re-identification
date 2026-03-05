@@ -18,8 +18,8 @@ We follow an iterative progression from simple to complex, benchmarking each ste
 | v01 | Frozen EfficientNet-B0 + cosine similarity | 0.2781 | Done |
 | v02 | Fine-tuned 31-class classifier embeddings | 0.4821 | Done |
 | v03 | ArcFace / CosFace metric learning | 0.6829 (full) | Done |
-| v04 | Backbone exploration (EfficientNetV2, ConvNeXt, ViT) | — | In Progress |
-| v05 | Augmentation + Test-Time Augmentation | — | Planned |
+| v04 | Backbone exploration (EfficientNetV2, ConvNeXt, ViT) | 0.8382 (ConvNeXt full) | Done |
+| v05 | Augmentation + Test-Time Augmentation | — | In Progress |
 | v06 | Hybrid: deep embeddings + engineered features → XGBoost/LightGBM | — | Planned |
 | v07 | Ensemble + final optimization | — | Planned |
 
@@ -36,6 +36,14 @@ We follow an iterative progression from simple to complex, benchmarking each ste
 ```
 
 ## Key Results
+
+**v04 — Backbone search: ConvNeXt-Small wins (full mAP: 0.8382)**
+- Compared tf_efficientnetv2_s (0.689), convnext_small (0.838), vit_small_patch16_224 (0.562)
+- All use same ArcFace(m=0.5, s=30) + 512-dim projection + image caching + AMP
+- Leaderboard: 0.797 (+32% over v03) | Best: Estella | Worst: Saseka
+- Total training time: 23 min for 3 backbones (vs expected ~25h without caching)
+
+![Backbone comparison](figures/v04_backbone_comparison.png)
 
 **v03 — ArcFace metric learning (CV mAP: 0.6829 full train / 0.4431 val fold)**
 - EfficientNet-B0 + projection 1280→512 (Linear+BN) + ArcFace(m=0.5, s=30)
