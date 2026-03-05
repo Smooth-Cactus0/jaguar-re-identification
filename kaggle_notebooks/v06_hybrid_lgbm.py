@@ -923,6 +923,14 @@ print(f'  Submission saved ({len(submission)} rows)')
 
 torch.save(model_final.state_dict(), OUT_DIR / f'model_{VERSION}.pth')
 
+# Also generate a cosine-based submission (backup, since cosine > LightGBM on val)
+# make_submission uses cosine similarity and shifts to [0, 1]
+make_submission(
+    test_df=test_df, test_embeddings=final_test_embs,
+    filename_to_idx=fname_to_idx_test,
+    output_path=OUT_DIR / f'submission_{VERSION}_cosine.csv')
+print('  Cosine submission also saved for comparison.')
+
 
 # ===========================================================================
 # Summary

@@ -6,3 +6,4 @@ v04_tf,tf_efficientnetv2_s,"ArcFace (m=0.5, s=30.0)",512,224,none (v05 adds augm
 v04_convnext,convnext_small,"ArcFace (m=0.5, s=30.0)",512,224,none (v05 adds augmentation),0.50456,Estella,,Saseka,,Backbone search; best=convnext_small; AMP+cache
 v04_vit,vit_small_patch16_224,"ArcFace (m=0.5, s=30.0)",512,224,none (v05 adds augmentation),0.50138,Lua,,Ipepo,,Backbone search; best=convnext_small; AMP+cache
 v05,convnext_small,"ArcFace (m=0.5, s=30.0)",512,224,heavy,0.49157,Marcela,,Akaloi,,"Heavy aug + TTA x5; noTTA val=0.48476; full mAP=0.85757; LB=0.795"
+v06,convnext_small,"ArcFace (m=0.5, s=30.0) + LightGBM",512,224,light,0.51040,Madalena,,Akaloi,,"Light aug + TTA x5; cosine val=0.5104 > lgbm val=0.4908; lgbm early-stop@100; full mAP=0.8603"

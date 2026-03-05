@@ -1,0 +1,2 @@
+version,backbone,loss,embedding_dim,img_size,augmentation,cv_map_cosine,cv_map_lgbm,cv_map_full,best_identity,worst_identity,lgbm_delta,lgbm_best_iter,epochs_s1,epochs_s2,notes
+v06,convnext_small,"ArcFace (m=0.5, s=30.0) + LightGBM",512,224,light,0.5104,0.49077,0.86025,Madalena,Akaloi,-0.01963,100,5,25,Light aug + TTA x5 + LightGBM (571 pairwise features)

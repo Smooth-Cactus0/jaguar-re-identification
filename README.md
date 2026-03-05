@@ -20,7 +20,7 @@ We follow an iterative progression from simple to complex, benchmarking each ste
 | v03 | ArcFace / CosFace metric learning | 0.6829 (full) | Done |
 | v04 | Backbone exploration (EfficientNetV2, ConvNeXt, ViT) | 0.8382 (ConvNeXt full) | Done |
 | v05 | Augmentation + Test-Time Augmentation | 0.8576 (full) | Done |
-| v06 | Hybrid: deep embeddings + engineered features → XGBoost/LightGBM | — | Planned |
+| v06 | Hybrid: deep embeddings + engineered features → XGBoost/LightGBM | 0.5104 (cosine) | Done |
 | v07 | Ensemble + final optimization | — | Planned |
 
 ## Project Structure
@@ -36,6 +36,17 @@ We follow an iterative progression from simple to complex, benchmarking each ste
 ```
 
 ## Key Results
+
+**v06 — Hybrid LightGBM (cosine val mAP: 0.5104, full mAP: 0.8603)**
+- ConvNeXt-Small + ArcFace with **light** augmentation (reverted from v05 heavy aug)
+- Light aug model improves cosine val mAP: 0.5046 (v04) → 0.5104 (+0.006)
+- LightGBM on 571-dim pairwise features (cosine, L2, |emb_i−emb_j|, colour histogram diffs)
+- Result: LightGBM (0.4908) < cosine (0.5104) — ArcFace embeddings already encode optimal similarity
+- LightGBM early-stopped at 100 iterations — no additional structure beyond cosine found
+- Key insight: for closed-set re-ID with well-trained ArcFace, cosine is the optimal pairwise measure
+
+![Per-identity AP v06](figures/v06_per_identity_ap.png)
+![Feature importance v06](figures/v06_feature_importance.png)
 
 **v05 — Heavy augmentation + 5-view TTA (full mAP: 0.8576)**
 - ConvNeXt-Small + heavy aug: RandomRotation(10°), aggressive ColorJitter, RandomErasing(p=0.25)
