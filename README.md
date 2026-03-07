@@ -21,7 +21,11 @@ We follow an iterative progression from simple to complex, benchmarking each ste
 | v04 | Backbone exploration (EfficientNetV2, ConvNeXt, ViT) | 0.8382 (ConvNeXt full) | Done |
 | v05 | Augmentation + Test-Time Augmentation | 0.8576 (full) | Done |
 | v06 | Hybrid: deep embeddings + engineered features → XGBoost/LightGBM | 0.5104 (cosine) | Done |
-| v07 | Ensemble + final optimization | — | Planned |
+| v07a | EVA-02 Large @448px, GeM, ArcFace, EMA, QE + k-reciprocal rerank | — | **LB 0.849** |
+| v07b | EVA-02 Large @448px, seed=123, varied augmentation | — | **LB 0.848** |
+| v07c | ConvNeXt-Large @384px, differential LR | — | **LB 0.849** |
+| v07d | Pseudo-labeling with 3-model ensemble | — | Pending |
+| v07e | Embedding fusion + DBA + reranking → final | — | Pending |
 
 ## Project Structure
 
@@ -36,6 +40,16 @@ We follow an iterative progression from simple to complex, benchmarking each ste
 ```
 
 ## Key Results
+
+**v07a/b/c — EVA-02 Large + ConvNeXt-Large ensemble (LB 0.848–0.849)**
+- Switched from ConvNeXt-Small to **EVA-02 Large** (300M params, patch14 @ 448px) — massive jump in representation quality
+- Added **GeM pooling** (learnable p=3) → replaces global average pooling to upweight high-activation (distinctive spot) regions
+- Added **EMA** (decay=0.999) — shadow copy of weights produces smoother inference model
+- Added **gradient checkpointing** — trades 30% compute for 40% VRAM savings at 448px
+- Post-processing: flip TTA + **query expansion** (top-3) + **k-reciprocal reranking** (k1=15, λ=0.4)
+- Leaderboard jump: 0.799 → **0.849** (+0.05) from architecture upgrade alone
+- Training time: ~3.5h each on Kaggle P100 (EVA-02 Large at 448px is compute-heavy)
+- Phase 2 pending: pseudo-labeling + 3-model ensemble targeting 0.95+
 
 **v06 — Hybrid LightGBM (cosine val mAP: 0.5104, full mAP: 0.8603)**
 - ConvNeXt-Small + ArcFace with **light** augmentation (reverted from v05 heavy aug)
