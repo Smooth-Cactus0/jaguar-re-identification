@@ -50,16 +50,34 @@ KAGGLE_INPUT = Path('/kaggle/input/jaguar-re-id')
 OUT_DIR = Path('/kaggle/working/output')
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# PL model outputs (from v07d)
-# Adjust path if you named the dataset differently
-PL_DIR = Path('/kaggle/input/v07d-output')
+# ── Auto-detect input directories ────────────────────────────────────────
+# Searches /kaggle/input/ for embedding files — works whether you attached
+# notebook outputs directly or uploaded them as named datasets.
 
-# Fallback: if PL outputs don't exist, try loading base model outputs directly
-BASE_DIRS = {
-    'v07a': Path('/kaggle/input/v07a-output'),
-    'v07b': Path('/kaggle/input/v07b-output'),
-    'v07c': Path('/kaggle/input/v07c-output'),
-}
+def find_embedding_dir(version: str, pl: bool = True) -> Path | None:
+    """Find the directory containing embeddings for a given version."""
+    search_root = Path('/kaggle/input')
+    suffix = 'pl_test' if pl else 'test'
+    marker = f'embeddings_{version}_{suffix}.npy'
+    for candidate in sorted(search_root.iterdir()):
+        if (candidate / marker).exists():
+            return candidate
+        if (candidate / 'output' / marker).exists():
+            return candidate / 'output'
+    return None
+
+# Try PL embeddings first (from v07d), fall back to base embeddings (from v07a/b/c)
+_pl_dir = find_embedding_dir('v07a', pl=True)
+PL_DIR = _pl_dir if _pl_dir is not None else Path('/kaggle/input/v07d-output')
+
+BASE_DIRS = {}
+for _v in ['v07a', 'v07b', 'v07c']:
+    _d = find_embedding_dir(_v, pl=False)
+    BASE_DIRS[_v] = _d if _d is not None else Path(f'/kaggle/input/{_v}-output')
+
+print(f'PL embeddings dir:   {PL_DIR}  (exists: {PL_DIR.exists()})')
+for _v, _d in BASE_DIRS.items():
+    print(f'Base {_v} dir: {_d}  (exists: {_d.exists()})')
 
 # ── Helper functions ─────────────────────────────────────────────────────
 

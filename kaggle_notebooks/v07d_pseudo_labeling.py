@@ -76,11 +76,33 @@ TEST_DIR = KAGGLE_INPUT / 'test' / 'test'
 OUT_DIR = Path('/kaggle/working/output')
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Base model outputs (uploaded as Kaggle datasets)
-# Adjust these paths to match your dataset names on Kaggle
-MODEL_A_DIR = Path('/kaggle/input/v07a-output')
-MODEL_B_DIR = Path('/kaggle/input/v07b-output')
-MODEL_C_DIR = Path('/kaggle/input/v07c-output')
+# ── Auto-detect base model output directories ────────────────────────────
+# When you add a notebook's output as input on Kaggle, its files appear at:
+#   /kaggle/input/<notebook-url-slug>/output/
+# The slug is shown in the notebook URL, e.g. "v07a-eva02-seed42" → slug.
+# We search /kaggle/input/ for the marker files so you don't need to hardcode.
+
+def find_model_dir(version: str) -> Path:
+    """Search /kaggle/input/ for the directory containing model_{version}.pth."""
+    search_root = Path('/kaggle/input')
+    marker = f'model_{version}.pth'
+    # Check direct subdirectories and one level deeper (for /output/ subfolder)
+    for candidate in sorted(search_root.iterdir()):
+        if (candidate / marker).exists():
+            return candidate
+        if (candidate / 'output' / marker).exists():
+            return candidate / 'output'
+    raise FileNotFoundError(
+        f'Could not find {marker} under {search_root}. '
+        f'Make sure the v07{version[-1]} notebook output is attached as an input dataset.'
+    )
+
+MODEL_A_DIR = find_model_dir('v07a')
+MODEL_B_DIR = find_model_dir('v07b')
+MODEL_C_DIR = find_model_dir('v07c')
+print(f'v07a → {MODEL_A_DIR}')
+print(f'v07b → {MODEL_B_DIR}')
+print(f'v07c → {MODEL_C_DIR}')
 
 # Model configs for reconstruction
 MODEL_CONFIGS = {
