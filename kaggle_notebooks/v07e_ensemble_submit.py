@@ -4,25 +4,26 @@ v07e: Ensemble + Post-Processing → Final Submission
 Phase 3 of the v07 pipeline. CPU-only, ~5 minutes.
 
 Strategy:
-  1. Load PL embeddings from v07d (or base from v07a/b/c if no PL)
-  2. Average EVA-A + EVA-B (same architecture → same feature space)
-  3. Concatenate averaged EVA with ConvNeXt-Large → 2560-dim
-  4. L2-normalise the fused embeddings
-  5. Apply DBA (Database-side Augmentation / weighted QE)
-  6. Apply k-reciprocal reranking with tuned parameters
-  7. Generate submission
+  1. Load PL embeddings from v07d (or base from v07a/b/f if no PL)
+  2. Average all 3 embeddings (v07a + v07b + v07f → all 1024-dim)
+     — EVA-02 x2 (supervised) + DINOv2-reg4 (self-supervised)
+     — Same dim → clean average, no concat noise
+  3. L2-normalise the averaged embeddings
+  4. Apply DBA (Database-side Augmentation / weighted QE)
+  5. Apply k-reciprocal reranking with tuned parameters
+  6. Generate submission
 
 Also generates ablation submissions (no rerank, no QE) for comparison.
 
 Inputs (uploaded as Kaggle dataset from v07d output):
-  - /kaggle/input/v07d-output/embeddings_v07{a,b,c}_pl_test.npy
-  - /kaggle/input/v07d-output/filenames_v07{a,b,c}_pl_test.json
+  - embeddings_v07{a,b,f}_pl_test.npy
+  - filenames_v07{a,b,f}_pl_test.json
 
 Outputs:
   - submission.csv (final, to /kaggle/working/)
-  - submission_v07e_full.csv (QE + rerank)
-  - submission_v07e_qe_only.csv (QE, no rerank)
-  - submission_v07e_cosine_only.csv (raw cosine, no post-processing)
+  - submission_v07e_full.csv (3-avg + DBA + rerank)
+  - submission_v07e_qe_only.csv (3-avg + DBA, no rerank)
+  - submission_v07e_cosine_only.csv (3-avg, no post-processing)
 """
 
 import json, time
@@ -46,7 +47,7 @@ RERANK_LAMBDA = 0.4      # Jaccard weight (default 0.3, increased for small gall
 
 # ── Paths ────────────────────────────────────────────────────────────────
 
-KAGGLE_INPUT = Path('/kaggle/input/jaguar-re-id')
+KAGGLE_INPUT = Path('/kaggle/input/competitions/jaguar-re-id')
 OUT_DIR = Path('/kaggle/working/output')
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -66,12 +67,12 @@ def find_embedding_dir(version: str, pl: bool = True) -> Path | None:
             return candidate / 'output'
     return None
 
-# Try PL embeddings first (from v07d), fall back to base embeddings (from v07a/b/c)
+# Try PL embeddings first (from v07d), fall back to base embeddings (from v07a/b/f)
 _pl_dir = find_embedding_dir('v07a', pl=True)
 PL_DIR = _pl_dir if _pl_dir is not None else Path('/kaggle/input/v07d-output')
 
 BASE_DIRS = {}
-for _v in ['v07a', 'v07b', 'v07c']:
+for _v in ['v07a', 'v07b', 'v07f']:
     _d = find_embedding_dir(_v, pl=False)
     BASE_DIRS[_v] = _d if _d is not None else Path(f'/kaggle/input/{_v}-output')
 
@@ -124,23 +125,17 @@ def l2_normalise(emb):
 
 # ── Embedding fusion ─────────────────────────────────────────────────────
 
-def fuse_embeddings(emb_a, emb_b, emb_c):
-    """Fuse embeddings: average same-arch, concatenate cross-arch.
+def fuse_embeddings(emb_a, emb_b, emb_f):
+    """Fuse embeddings: average all 3 models (all 1024-dim).
 
-    EVA-A and EVA-B share the same 1024-dim feature space → average.
-    ConvNeXt-C has a different 1536-dim space → concatenate.
-    Result: 1024 + 1536 = 2560-dim fused embedding.
+    EVA-02 A (supervised, seed=42) + EVA-02 B (supervised, seed=123)
+    + DINOv2-Large-reg4 (self-supervised) — all 1024-dim ViT-L/14.
+    Clean average: no cross-arch concat noise.
+    Result: 1024-dim fused embedding.
     """
-    # Average EVA models (same feature space)
-    emb_eva = (emb_a + emb_b) / 2
-    emb_eva = l2_normalise(emb_eva)
-
-    # Concatenate with ConvNeXt
-    emb_fused = np.concatenate([emb_eva, emb_c], axis=1)
+    emb_fused = (emb_a + emb_b + emb_f) / 3
     emb_fused = l2_normalise(emb_fused)
-
-    print(f'  EVA avg: {emb_eva.shape} + ConvNeXt: {emb_c.shape} '
-          f'→ fused: {emb_fused.shape}')
+    print(f'  3-way average: {emb_a.shape} → fused: {emb_fused.shape}')
     return emb_fused
 
 
@@ -250,7 +245,7 @@ if __name__ == '__main__':
 
     emb_a = load_embeddings('v07a')
     emb_b = load_embeddings('v07b')
-    emb_c = load_embeddings('v07c')
+    emb_f = load_embeddings('v07f')
     test_names = load_filenames('v07a')
 
     img_map = {n: i for i, n in enumerate(test_names)}
@@ -260,7 +255,7 @@ if __name__ == '__main__':
     print('Fusing embeddings')
     print('='*60)
 
-    emb_fused = fuse_embeddings(emb_a, emb_b, emb_c)
+    emb_fused = fuse_embeddings(emb_a, emb_b, emb_f)
 
     # ── Ablation 1: Raw cosine (no post-processing) ─────────────────────
     print('\n' + '='*60)
@@ -301,7 +296,7 @@ if __name__ == '__main__':
     print('Individual model submissions (for analysis)')
     print('='*60)
 
-    for version, emb in [('v07a', emb_a), ('v07b', emb_b), ('v07c', emb_c)]:
+    for version, emb in [('v07a', emb_a), ('v07b', emb_b), ('v07f', emb_f)]:
         emb_qe = dba_query_expansion(emb, top_k=3, iterations=1)
         sim = emb_qe @ emb_qe.T
         sim = k_reciprocal_rerank(sim, k1=RERANK_K1, k2=RERANK_K2,

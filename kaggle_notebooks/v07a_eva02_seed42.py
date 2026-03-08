@@ -11,7 +11,7 @@ Architecture:
 
 Training:
   - Full train set (1895 images, 31 classes), no validation split
-  - AdamW lr=2e-5, CosineAnnealingLR, 10 epochs
+  - AdamW lr=2e-5, CosineAnnealingLR, 20 epochs
   - Batch=4, grad_accum=4 → effective batch=16
   - Augmentation: HFlip, RandomAffine(15°, 0.15, 0.85-1.15), ColorJitter, RandomErasing
 
@@ -54,7 +54,7 @@ IMG_SIZE = 448
 NUM_CLASSES = 31
 
 # Training
-NUM_EPOCHS = 10
+NUM_EPOCHS = 20
 BATCH_SIZE = 4
 GRAD_ACCUM = 4       # effective batch = 16
 LR = 2e-5
@@ -83,7 +83,7 @@ DEVICE_TYPE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # ── Paths ────────────────────────────────────────────────────────────────
 
-KAGGLE_INPUT = Path('/kaggle/input/jaguar-re-id')
+KAGGLE_INPUT = Path('/kaggle/input/competitions/jaguar-re-id')
 TRAIN_DIR = KAGGLE_INPUT / 'train' / 'train'
 TEST_DIR = KAGGLE_INPUT / 'test' / 'test'
 OUT_DIR = Path('/kaggle/working/output')

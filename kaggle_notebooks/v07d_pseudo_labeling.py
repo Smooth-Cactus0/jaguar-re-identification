@@ -4,21 +4,28 @@ v07d: Pseudo-Labeling — Ensemble-based self-training for all 3 models
 Phase 2 of the v07 ensemble pipeline.
 
 Strategy:
-  1. Load pre-trained weights + embeddings from v07a, v07b, v07c
-  2. Ensemble test embeddings → compute cosine sim to class centroids
-  3. Assign pseudo-labels where max confidence > 0.90
+  1. Load pre-trained weights + embeddings from v07a, v07b, v07f
+  2. Average all 3 embeddings → compute cosine sim to class centroids
+     (all models share 1024-dim space → clean average, no concat noise)
+  3. Assign pseudo-labels where all 3 models agree AND confidence > 0.90
   4. Fine-tune each model for 5 epochs at lower LR on train + pseudo data
   5. Save updated weights + embeddings for the ensemble notebook (v07e)
 
-Inputs (uploaded as Kaggle datasets from v07a/b/c outputs):
-  - /kaggle/input/v07a-output/model_v07a.pth + embeddings + filenames
-  - /kaggle/input/v07b-output/model_v07b.pth + embeddings + filenames
-  - /kaggle/input/v07c-output/model_v07c.pth + embeddings + filenames
+Models:
+  - v07a: EVA-02 Large (seed=42, 20 epochs)
+  - v07b: EVA-02 Large (seed=123, 20 epochs)
+  - v07f: DINOv2-Large-reg4 (self-supervised, 15 epochs)
+  All produce 1024-dim embeddings → averaged for centroid matching.
+
+Inputs (uploaded as Kaggle datasets from v07a/b/f outputs):
+  - model_v07a.pth + embeddings + filenames
+  - model_v07b.pth + embeddings + filenames
+  - model_v07f.pth + embeddings + filenames
 
 Outputs to /kaggle/working/output/:
-  - model_v07a_pl.pth, model_v07b_pl.pth, model_v07c_pl.pth
-  - embeddings_v07{a,b,c}_pl_{train,test}.npy
-  - filenames_v07{a,b,c}_pl_{train,test}.json
+  - model_v07a_pl.pth, model_v07b_pl.pth, model_v07f_pl.pth
+  - embeddings_v07{a,b,f}_pl_{train,test}.npy
+  - filenames_v07{a,b,f}_pl_{train,test}.json
   - pseudo_labels.csv (for analysis)
   - submission_v07d.csv (standalone from best single model after PL)
 """
@@ -70,7 +77,7 @@ DEVICE_TYPE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # ── Paths ────────────────────────────────────────────────────────────────
 
-KAGGLE_INPUT = Path('/kaggle/input/jaguar-re-id')
+KAGGLE_INPUT = Path('/kaggle/input/competitions/jaguar-re-id')
 TRAIN_DIR = KAGGLE_INPUT / 'train' / 'train'
 TEST_DIR = KAGGLE_INPUT / 'test' / 'test'
 OUT_DIR = Path('/kaggle/working/output')
@@ -99,12 +106,13 @@ def find_model_dir(version: str) -> Path:
 
 MODEL_A_DIR = find_model_dir('v07a')
 MODEL_B_DIR = find_model_dir('v07b')
-MODEL_C_DIR = find_model_dir('v07c')
+MODEL_F_DIR = find_model_dir('v07f')
 print(f'v07a → {MODEL_A_DIR}')
 print(f'v07b → {MODEL_B_DIR}')
-print(f'v07c → {MODEL_C_DIR}')
+print(f'v07f → {MODEL_F_DIR}')
 
 # Model configs for reconstruction
+# All 3 models output 1024-dim embeddings → clean averaging in ensemble
 MODEL_CONFIGS = {
     'v07a': {
         'model_name': 'eva02_large_patch14_448.mim_m38m_ft_in22k_in1k',
@@ -116,10 +124,10 @@ MODEL_CONFIGS = {
         'img_size': 448, 'batch_size': 4, 'grad_accum': 4,
         'model_class': 'eva', 'input_dir': MODEL_B_DIR,
     },
-    'v07c': {
-        'model_name': 'convnext_large.fb_in22k_ft_in1k_384',
-        'img_size': 384, 'batch_size': 8, 'grad_accum': 2,
-        'model_class': 'convnext', 'input_dir': MODEL_C_DIR,
+    'v07f': {
+        'model_name': 'vit_large_patch14_reg4_dinov2.lvd142m',
+        'img_size': 448, 'batch_size': 4, 'grad_accum': 4,
+        'model_class': 'dinov2', 'input_dir': MODEL_F_DIR,
     },
 }
 
@@ -246,7 +254,14 @@ class EVAReIDModel(nn.Module):
         return emb
 
 
-class ConvNeXtReIDModel(nn.Module):
+class DINOv2ReIDModel(nn.Module):
+    """DINOv2-Large with register tokens.
+
+    Strips CLS (index 0) and 4 register tokens (indices 1-4) before
+    GeM pooling. At 448px with patch14: 32×32=1024 clean patch tokens."""
+
+    NUM_REGISTER_TOKENS = 4
+
     def __init__(self, model_name, num_classes=31):
         super().__init__()
         self.backbone = timm.create_model(model_name, pretrained=True, num_classes=0)
@@ -254,13 +269,19 @@ class ConvNeXtReIDModel(nn.Module):
         self.gem = GeM()
         self.bn = nn.BatchNorm1d(self.feat_dim)
         self.head = ArcFaceLayer(self.feat_dim, num_classes, s=ARCFACE_S, m=ARCFACE_M)
+        self.patch_size = 14
+        self.grid_size = 448 // self.patch_size  # 32
 
     def forward(self, x, label=None):
         features = self.backbone.forward_features(x)
         if features.dim() == 3:
-            B, N, C = features.shape
-            H = W = int(math.sqrt(N))
-            features = features.permute(0, 2, 1).reshape(B, C, H, W)
+            B, total_tokens, C = features.shape
+            num_prefix = 1 + self.NUM_REGISTER_TOKENS
+            patch_tokens = features[:, num_prefix:, :]
+            H = W = self.grid_size
+            if patch_tokens.shape[1] != H * W:
+                patch_tokens = patch_tokens[:, -H * W:, :]
+            features = patch_tokens.permute(0, 2, 1).reshape(B, C, H, W)
         emb = self.gem(features).flatten(1)
         emb = self.bn(emb)
         if label is not None:
@@ -272,8 +293,8 @@ def build_model(model_class, model_name, num_classes=31):
     """Factory: build model by class type."""
     if model_class == 'eva':
         return EVAReIDModel(model_name, num_classes)
-    elif model_class == 'convnext':
-        return ConvNeXtReIDModel(model_name, num_classes)
+    elif model_class == 'dinov2':
+        return DINOv2ReIDModel(model_name, num_classes)
     else:
         raise ValueError(f'Unknown model class: {model_class}')
 
@@ -484,21 +505,19 @@ if __name__ == '__main__':
     print('STEP 2: Ensembling embeddings for pseudo-label generation')
     print('='*60)
 
-    # Average EVA models (same architecture → same feature space)
-    eva_test = (all_test_embs['v07a'] + all_test_embs['v07b']) / 2
-    eva_test = eva_test / np.linalg.norm(eva_test, axis=1, keepdims=True)
-    eva_train = (all_train_embs['v07a'] + all_train_embs['v07b']) / 2
-    eva_train = eva_train / np.linalg.norm(eva_train, axis=1, keepdims=True)
+    # All 3 models share 1024-dim space → average all three for strongest signal
+    def l2_norm(e):
+        return e / np.maximum(np.linalg.norm(e, axis=1, keepdims=True), 1e-8)
 
-    # For pseudo-labeling we use the EVA ensemble (same feature space as centroids)
-    # ConvNeXt has different embedding dim so we can't directly average with EVA
-    # Instead, we use the stronger EVA ensemble for centroid matching
-    # (ConvNeXt centroids are computed separately if needed)
-    print(f'  EVA ensemble: test {eva_test.shape}, train {eva_train.shape}')
+    ens_test = l2_norm(
+        all_test_embs['v07a'] + all_test_embs['v07b'] + all_test_embs['v07f'])
+    ens_train = l2_norm(
+        all_train_embs['v07a'] + all_train_embs['v07b'] + all_train_embs['v07f'])
+    print(f'  3-model average: test {ens_test.shape}, train {ens_train.shape}')
 
-    # Also compute ConvNeXt centroids for a second opinion
-    cnx_test = all_test_embs['v07c']
-    cnx_train = all_train_embs['v07c']
+    # Per-model predictions for cross-validation
+    per_model_test = {v: all_test_embs[v] for v in MODEL_CONFIGS}
+    per_model_train = {v: all_train_embs[v] for v in MODEL_CONFIGS}
 
     # Get train labels in embedding order
     train_label_map = {fn: label_map[train_df.loc[train_df['filename'] == fn,
@@ -508,40 +527,46 @@ if __name__ == '__main__':
 
     # ── Step 3: Generate pseudo-labels ───────────────────────────────────
     print('\n' + '='*60)
-    print('STEP 3: Generating pseudo-labels')
+    print('STEP 3: Generating pseudo-labels (3-way agreement)')
     print('='*60)
 
-    # Use EVA ensemble for primary pseudo-labels
-    pl_df_eva = generate_pseudo_labels(
-        eva_test, eva_train, train_labels, test_filenames,
+    # Generate per-model pseudo-labels for cross-validation
+    per_model_pls = {}
+    for version in MODEL_CONFIGS:
+        pl_df_v = generate_pseudo_labels(
+            per_model_test[version], per_model_train[version],
+            train_labels, test_filenames,
+            threshold=PL_THRESHOLD, max_add=PL_MAX_ADD)
+        per_model_pls[version] = dict(zip(pl_df_v['filename'], pl_df_v['label'])) \
+            if len(pl_df_v) > 0 else {}
+        print(f'  {version}: {len(per_model_pls[version])} above threshold')
+
+    # Also run on 3-model average for highest-confidence candidates
+    pl_df_ens = generate_pseudo_labels(
+        ens_test, ens_train, train_labels, test_filenames,
         threshold=PL_THRESHOLD, max_add=PL_MAX_ADD)
+    ens_pls = dict(zip(pl_df_ens['filename'], pl_df_ens['label'])) \
+        if len(pl_df_ens) > 0 else {}
 
-    # Cross-validate with ConvNeXt
-    pl_df_cnx = generate_pseudo_labels(
-        cnx_test, cnx_train, train_labels, test_filenames,
-        threshold=PL_THRESHOLD, max_add=PL_MAX_ADD)
+    # Keep only pseudo-labels where ALL 3 individual models agree
+    pls_a, pls_b, pls_f = (per_model_pls['v07a'],
+                            per_model_pls['v07b'],
+                            per_model_pls['v07f'])
+    agreed = []
+    disagreed = 0
+    for fn in ens_pls:
+        label_a = pls_a.get(fn)
+        label_b = pls_b.get(fn)
+        label_f = pls_f.get(fn)
+        if label_a is not None and label_b is not None and label_f is not None:
+            if label_a == label_b == label_f:
+                row = pl_df_ens[pl_df_ens['filename'] == fn].iloc[0].to_dict()
+                agreed.append(row)
+            else:
+                disagreed += 1
 
-    # Keep only pseudo-labels where BOTH model families agree
-    if len(pl_df_eva) > 0 and len(pl_df_cnx) > 0:
-        eva_pls = dict(zip(pl_df_eva['filename'], pl_df_eva['label']))
-        cnx_pls = dict(zip(pl_df_cnx['filename'], pl_df_cnx['label']))
-
-        agreed = []
-        disagreed = 0
-        for fn in eva_pls:
-            if fn in cnx_pls:
-                if eva_pls[fn] == cnx_pls[fn]:
-                    # Both models agree on the label
-                    row = pl_df_eva[pl_df_eva['filename'] == fn].iloc[0].to_dict()
-                    agreed.append(row)
-                else:
-                    disagreed += 1
-
-        pl_df = pd.DataFrame(agreed) if agreed else pd.DataFrame()
-        print(f'\n  Cross-validated: {len(agreed)} agreed, {disagreed} disagreed')
-    else:
-        pl_df = pl_df_eva  # fallback to EVA-only
-        print('  Using EVA-only pseudo-labels (ConvNeXt had none)')
+    pl_df = pd.DataFrame(agreed) if agreed else pd.DataFrame()
+    print(f'\n  3-way agreement: {len(agreed)} agreed, {disagreed} disagreed')
 
     # Save pseudo-labels for analysis
     if len(pl_df) > 0:

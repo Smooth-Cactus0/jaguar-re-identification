@@ -69,7 +69,7 @@ DEVICE_TYPE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # ── Paths ────────────────────────────────────────────────────────────────
 
-KAGGLE_INPUT = Path('/kaggle/input/jaguar-re-id')
+KAGGLE_INPUT = Path('/kaggle/input/competitions/jaguar-re-id')
 TRAIN_DIR = KAGGLE_INPUT / 'train' / 'train'
 TEST_DIR = KAGGLE_INPUT / 'test' / 'test'
 OUT_DIR = Path('/kaggle/working/output')
