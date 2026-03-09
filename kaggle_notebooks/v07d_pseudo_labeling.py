@@ -115,16 +115,20 @@ MODEL_CONFIGS = {
         'model_name': 'eva02_large_patch14_448.mim_m38m_ft_in22k_in1k',
         'img_size': 448, 'batch_size': 4, 'grad_accum': 4,
         'model_class': 'eva', 'input_dir': MODEL_A_DIR,
+        'norm_mean': [0.481, 0.457, 0.408], 'norm_std': [0.268, 0.261, 0.275],
     },
     'v07b': {
         'model_name': 'eva02_large_patch14_448.mim_m38m_ft_in22k_in1k',
         'img_size': 448, 'batch_size': 4, 'grad_accum': 4,
         'model_class': 'eva', 'input_dir': MODEL_B_DIR,
+        'norm_mean': [0.481, 0.457, 0.408], 'norm_std': [0.268, 0.261, 0.275],
     },
     'v07f': {
         'model_name': 'vit_large_patch14_reg4_dinov2.lvd142m',
         'img_size': 448, 'batch_size': 4, 'grad_accum': 4,
         'model_class': 'dinov2', 'input_dir': MODEL_F_DIR,
+        # DINOv2 was trained with standard ImageNet normalization
+        'norm_mean': [0.485, 0.456, 0.406], 'norm_std': [0.229, 0.224, 0.225],
     },
 }
 
@@ -172,8 +176,11 @@ class JaguarDataset(Dataset):
         return img, torch.tensor(row['label'], dtype=torch.long)
 
 
-def get_transforms(img_size, mode='train'):
-    """Build transforms for a given image size and mode."""
+def get_transforms(img_size, mode='train', norm_mean=None, norm_std=None):
+    """Build transforms for a given image size and mode.
+    norm_mean/norm_std default to EVA jaguar stats; pass ImageNet stats for DINOv2."""
+    mean = norm_mean if norm_mean is not None else NORM_MEAN
+    std = norm_std if norm_std is not None else NORM_STD
     if mode == 'train':
         return transforms.Compose([
             transforms.Resize((img_size, img_size)),
@@ -182,14 +189,14 @@ def get_transforms(img_size, mode='train'):
                                     scale=(0.85, 1.15)),
             transforms.ColorJitter(brightness=0.2, contrast=0.2),
             transforms.ToTensor(),
-            transforms.Normalize(NORM_MEAN, NORM_STD),
+            transforms.Normalize(mean, std),
             transforms.RandomErasing(p=0.25),
         ])
     else:
         return transforms.Compose([
             transforms.Resize((img_size, img_size)),
             transforms.ToTensor(),
-            transforms.Normalize(NORM_MEAN, NORM_STD),
+            transforms.Normalize(mean, std),
         ])
 
 
@@ -261,7 +268,10 @@ class DINOv2ReIDModel(nn.Module):
 
     def __init__(self, model_name, num_classes=31):
         super().__init__()
-        self.backbone = timm.create_model(model_name, pretrained=True, num_classes=0)
+        # img_size=448 MUST match the resolution used during v07f training.
+        # Without it, timm defaults to DINOv2's native 518px → 1369 pos_embed tokens,
+        # which is incompatible with the 448px checkpoint (1024 tokens).
+        self.backbone = timm.create_model(model_name, pretrained=True, num_classes=0, img_size=448)
         self.feat_dim = self.backbone.num_features
         self.gem = GeM()
         self.bn = nn.BatchNorm1d(self.feat_dim)
@@ -629,9 +639,11 @@ if __name__ == '__main__':
             model.load_state_dict(base_weights)
             print(f'    Loaded base weights from {cfg["input_dir"]}')
 
-            # Create dataloaders
-            train_transform = get_transforms(img_size, mode='train')
-            test_transform = get_transforms(img_size, mode='test')
+            # Create dataloaders (use per-model normalization)
+            norm_mean = cfg.get('norm_mean')
+            norm_std = cfg.get('norm_std')
+            train_transform = get_transforms(img_size, mode='train', norm_mean=norm_mean, norm_std=norm_std)
+            test_transform = get_transforms(img_size, mode='test', norm_mean=norm_mean, norm_std=norm_std)
 
             train_dataset = JaguarDataset(combined_df, TRAIN_DIR, train_transform)
             train_loader = DataLoader(
