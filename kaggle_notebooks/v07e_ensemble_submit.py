@@ -60,11 +60,9 @@ def find_embedding_dir(version: str, pl: bool = True) -> Path | None:
     search_root = Path('/kaggle/input')
     suffix = 'pl_test' if pl else 'test'
     marker = f'embeddings_{version}_{suffix}.npy'
-    for candidate in sorted(search_root.iterdir()):
-        if (candidate / marker).exists():
-            return candidate
-        if (candidate / 'output' / marker).exists():
-            return candidate / 'output'
+    matches = list(search_root.rglob(marker))
+    if matches:
+        return matches[0].parent
     return None
 
 # Try PL embeddings first (from v07d), fall back to base embeddings (from v07a/b/f)

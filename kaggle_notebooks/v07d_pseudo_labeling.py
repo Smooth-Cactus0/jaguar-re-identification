@@ -90,15 +90,12 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 # We search /kaggle/input/ for the marker files so you don't need to hardcode.
 
 def find_model_dir(version: str) -> Path:
-    """Search /kaggle/input/ for the directory containing model_{version}.pth."""
+    """Search /kaggle/input/ recursively for the directory containing model_{version}.pth."""
     search_root = Path('/kaggle/input')
     marker = f'model_{version}.pth'
-    # Check direct subdirectories and one level deeper (for /output/ subfolder)
-    for candidate in sorted(search_root.iterdir()):
-        if (candidate / marker).exists():
-            return candidate
-        if (candidate / 'output' / marker).exists():
-            return candidate / 'output'
+    matches = list(search_root.rglob(marker))
+    if matches:
+        return matches[0].parent
     raise FileNotFoundError(
         f'Could not find {marker} under {search_root}. '
         f'Make sure the v07{version[-1]} notebook output is attached as an input dataset.'
