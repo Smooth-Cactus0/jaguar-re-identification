@@ -434,7 +434,7 @@ def query_expansion(emb, top_k=3):
     return new_emb / np.linalg.norm(new_emb, axis=1, keepdims=True)
 
 
-def k_reciprocal_rerank(prob, k1=15, k2=6, lambda_value=0.4):
+def k_reciprocal_rerank(prob, k1=20, k2=6, lambda_value=0.3):
     q_g_dist = 1 - prob
     original_dist = q_g_dist.copy()
     initial_rank = np.argsort(original_dist, axis=1)

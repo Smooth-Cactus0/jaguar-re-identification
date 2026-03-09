@@ -40,10 +40,12 @@ VERSION = 'v07e'
 DBA_TOP_K = 5
 DBA_ITERATIONS = 1       # can increase to 2 for stronger smoothing
 
-# K-reciprocal reranking parameters (tuned for small 371-image gallery)
-RERANK_K1 = 15           # neighbourhood size (default 20, reduced for small gallery)
-RERANK_K2 = 6            # secondary neighbourhood
-RERANK_LAMBDA = 0.4      # Jaccard weight (default 0.3, increased for small gallery)
+# K-reciprocal reranking parameters
+# Empirically validated: k1=20, lambda=0.3 matches winning notebook params and
+# outperforms the "small gallery tuned" k1=15, lambda=0.4 assumption
+RERANK_K1 = 20
+RERANK_K2 = 6
+RERANK_LAMBDA = 0.3
 
 # ── Paths ────────────────────────────────────────────────────────────────
 

@@ -70,9 +70,9 @@ USE_TTA = True        # horizontal flip TTA
 USE_QE = True         # query expansion
 QE_TOP_K = 3
 USE_RERANK = True     # k-reciprocal reranking
-RERANK_K1 = 15        # tuned for small 371-image gallery (default 20)
+RERANK_K1 = 20        # tuned for small 371-image gallery (default 20)
 RERANK_K2 = 6
-RERANK_LAMBDA = 0.4   # trust Jaccard more with small gallery (default 0.3)
+RERANK_LAMBDA = 0.3   # trust Jaccard more with small gallery (default 0.3)
 
 # Normalisation (from reference EVA notebook — computed on jaguar dataset)
 NORM_MEAN = [0.481, 0.457, 0.408]

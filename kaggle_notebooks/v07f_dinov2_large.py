@@ -83,9 +83,9 @@ USE_TTA = True        # horizontal flip TTA
 USE_QE = True         # query expansion
 QE_TOP_K = 3
 USE_RERANK = True     # k-reciprocal reranking
-RERANK_K1 = 15        # tuned for small 371-image gallery
+RERANK_K1 = 20        # tuned for small 371-image gallery
 RERANK_K2 = 6
-RERANK_LAMBDA = 0.4
+RERANK_LAMBDA = 0.3
 
 # Normalisation — ImageNet stats (DINOv2 was trained with standard IN1K norm)
 NORM_MEAN = [0.485, 0.456, 0.406]
@@ -218,7 +218,7 @@ class DINOv2ReIDModel(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.backbone = timm.create_model(MODEL_NAME, pretrained=True, num_classes=0)
+        self.backbone = timm.create_model(MODEL_NAME, pretrained=True, num_classes=0, img_size=IMG_SIZE)
         self.feat_dim = self.backbone.num_features
         self.gem = GeM()
         self.bn = nn.BatchNorm1d(self.feat_dim)
