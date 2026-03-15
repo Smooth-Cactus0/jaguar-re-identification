@@ -1,124 +1,100 @@
-# Jaguar Re-Identification — Kaggle Competition
+# Jaguar Re-Identification — 4th Place Solution
 
-Matching individual jaguars across photographs using deep metric learning and computer vision.
+**Competition**: [Jaguar Re-ID](https://www.kaggle.com/competitions/jaguar-re-id) · **Final rank: 4th / 348 teams** · **Private LB: 0.939**
 
-**Competition**: [Jaguar Re-ID](https://www.kaggle.com/competitions/jaguar-re-id)
-**Metric**: Identity-balanced Mean Average Precision (mAP)
+Matching individual jaguars across photographs using deep metric learning. Given 1,895 training images of 31 named jaguars, predict pairwise similarity scores for 137,270 test image pairs.
 
-## The Challenge
+---
 
-Given 1,895 training images of 31 named jaguars, predict pairwise similarity scores for 137,270 test image pairs. Each jaguar has unique spot patterns — the model must learn to distinguish individuals despite variations in viewpoint, lighting, and partial occlusion.
+## The jaguars
+
+![Identity gallery](figures/eda_02_identity_gallery.png)
+
+31 individuals, each with a unique spot pattern. Image counts range from 13 (Bernard, Ipepo) to 183 (Marcela). The evaluation metric is identity-balanced mAP — each jaguar contributes equally regardless of how many images they have.
+
+### Why this is hard
+
+![Intra-identity variability](figures/eda_03_intra_identity_variability.png)
+
+The same jaguar looks completely different depending on viewpoint, pose, and lighting. Meanwhile, different jaguars can look superficially similar if their spot patterns overlap in the frame. The model must learn to distinguish individuals, not just "jaguar vs not jaguar".
+
+### The task
+
+![Sample retrievals](figures/v01_sample_retrievals.png)
+
+*Sample retrievals from the v01 frozen baseline — even ImageNet features partially work. Green = correct identity, red = wrong.*
+
+---
+
+## Results
+
+| Version | Approach | Private LB | Public LB |
+|---------|----------|-----------|----------|
+| v01 | Frozen EfficientNet-B0 + cosine similarity | ~0.28 | — |
+| v02 | Fine-tuned 31-class classifier | 0.414 | — |
+| v03 | ArcFace metric learning | 0.609 | — |
+| v04 | Backbone search → ConvNeXt-Small wins | 0.797 | — |
+| v05 | Heavy augmentation + 5-view TTA | 0.795 | — |
+| v06 | Hybrid: ArcFace embeddings + LightGBM | 0.799 | — |
+| v07a | EVA-02 Large @ 448px, 20 epochs, seed=42 | 0.918 | 0.934 |
+| v07b | EVA-02 Large @ 448px, 20 epochs, seed=123 | 0.915 | 0.901 |
+| v07f | DINOv2-Large-reg4 @ 448px, 15 epochs | 0.886 | 0.878 |
+| v07d | Pseudo-labeling (3-model agreement) | 0.935 | 0.933 |
+| **v07e** | **3-model ensemble + QE + reranking** | **0.939** ✓ | **0.964** |
+| v07g | Round-2 pseudo-labeling | 0.937 | 0.954 |
+
+---
 
 ## Approach
 
-We follow an iterative progression from simple to complex, benchmarking each step:
+A systematic progression: start simple, benchmark everything, scale what works.
 
-| Version | Approach | CV mAP | Status |
-|---------|----------|--------|--------|
-| v01 | Frozen EfficientNet-B0 + cosine similarity | 0.2781 | Done |
-| v02 | Fine-tuned 31-class classifier embeddings | 0.4821 | Done |
-| v03 | ArcFace / CosFace metric learning | 0.6829 (full) | Done |
-| v04 | Backbone exploration (EfficientNetV2, ConvNeXt, ViT) | 0.8382 (ConvNeXt full) | Done |
-| v05 | Augmentation + Test-Time Augmentation | 0.8576 (full) | Done |
-| v06 | Hybrid: deep embeddings + engineered features → XGBoost/LightGBM | 0.5104 (cosine) | Done |
-| v07a | EVA-02 Large @448px, GeM, ArcFace, EMA, QE + rerank — 20 epochs | — | **LB 0.918** |
-| v07b | EVA-02 Large @448px, seed=123, varied augmentation — 20 epochs | — | **LB 0.915** |
-| v07f | DINOv2-Large-reg4 @448px, self-supervised pretraining — 15 epochs | — | **LB 0.886** |
-| v07d | Pseudo-labeling: 3-model agreement filter + 5-epoch fine-tune | — | Running |
-| v07e | 3-way average ensemble (EVA×2 + DINOv2) + DBA + reranking | — | Pending |
+The final pipeline combines three large ViT models (EVA-02 Large × 2 + DINOv2-Large) trained with ArcFace metric learning, pseudo-labeled on test images, and ensembled with query expansion and k-reciprocal reranking. Full details in [SOLUTION.md](SOLUTION.md).
 
-## Project Structure
+### Key milestones
+
+**ArcFace over CrossEntropy (+47%)**: Training as a retrieval task directly — adding an angular margin penalty that forces embeddings of the same identity to cluster tightly — dramatically outperforms treating it as a 31-class classification problem.
+
+**EVA-02 Large @ 448px (+15%)**: The biggest single jump. At 448px with 14px patches, each ViT token covers a ~14×14px region — roughly the scale of jaguar spots. The model's attention can resolve individual spot details rather than blurred regions.
+
+**GeM pooling**: Instead of average pooling the ViT tokens, Generalised Mean Pooling (learnable p≈3) upweights the most discriminative spatial regions — the distinctive spot pattern areas dominate the embedding rather than uniform background.
+
+**EMA inference**: A shadow copy of model weights maintained as a running average over training. Smoother than the final raw checkpoint and consistently improves retrieval mAP by ~0.5–1%.
+
+**Pseudo-labeling**: Used all three trained models to label test images — only images where all three agreed with confidence > 0.90 were added to training (~100–150 samples). Conservative but high-precision: adds test-domain information without introducing label noise.
+
+**3-way ensemble**: Simple average of L2-normalised embeddings from EVA-A, EVA-B, and DINOv2 (all 1024-dim). EVA-02 is supervised (ImageNet-21k), DINOv2 is self-supervised (DINO+iBOT on LVD-142M) — different pretraining paradigms produce genuinely diverse features. Averaging in the same embedding space is clean; concatenation across architectures hurt results.
+
+**K-reciprocal reranking**: Post-processing from Zhong et al. 2017. If A is in B's top-k and B is in A's top-k, they're reciprocal neighbours — likely the same individual. Blending Jaccard similarity over these sets with cosine similarity (k1=20, λ=0.3) added ~0.01–0.02 LB at every stage.
+
+---
+
+## Project structure
 
 ```
-├── notebooks/           # EDA, visualization, analysis (run locally)
-├── kaggle_notebooks/    # GPU training notebooks (run on Kaggle)
+├── kaggle_notebooks/    # GPU training notebooks (v01–v07g)
+├── notebooks/           # EDA and local analysis
 ├── src/                 # Reusable modules (data, models, losses, evaluation)
-├── configs/             # Training configurations
-├── figures/             # Plots and visualizations
-├── results/             # Benchmark tables and metrics
-└── submissions/         # Generated submission CSVs
+├── figures/             # Plots and visualisations
+├── results/             # Benchmark tables (benchmarks.csv)
+├── submissions/         # Generated submission CSVs
+└── SOLUTION.md          # Full competition writeup
 ```
 
-## Key Results
+## Tech stack
 
-**v07a/b/f — EVA-02 Large × 2 + DINOv2-Large-reg4 (LB 0.918 / 0.915 / 0.886)**
-- Switched from ConvNeXt-Small to **EVA-02 Large** (300M params, patch14 @ 448px) — massive representation quality jump
-- Added **GeM pooling** (learnable p=3) → upweights high-activation (distinctive spot) regions over global average pooling
-- Added **EMA** (decay=0.999) — shadow copy of weights produces smoother inference model
-- Added **gradient checkpointing** — trades 30% compute for 40% VRAM savings at 448px
-- Post-processing: flip TTA + **query expansion** (top-3) + **k-reciprocal reranking** (k1=15, λ=0.4)
-- 20 epochs vs 10: 0.849 → **0.918** (+0.069) for v07a — significant convergence gain
-- **DINOv2-Large-reg4** added as 3rd model: self-supervised pretraining (DINO+iBOT on LVD-142M) creates fundamentally different features from EVA-02's supervised training → genuine ensemble diversity at same 1024-dim → clean 3-way average (no cross-arch concat noise)
-- Ensemble lesson: cross-arch concat (EVA 1024d + ConvNeXt 1536d) regressed results (0.918→0.902); same-dim averaging is the correct fusion strategy
-- Phase 2 running: pseudo-labeling (3-way agreement filter) + final 3-model ensemble targeting 0.95+
+**Core**: PyTorch, timm, torchvision
+**Backbone models**: EVA-02 Large (`eva02_large_patch14_448`), DINOv2-Large-reg4 (`vit_large_patch14_reg4_dinov2.lvd142m`)
+**Metric learning**: ArcFace (s=30, m=0.5), GeM pooling, BN embedding head, EMA
+**Post-processing**: Query expansion (DBA, top-3), k-reciprocal reranking (Zhong et al. 2017)
+**Feature baselines**: XGBoost, LightGBM, scikit-learn
+**Visualisation**: matplotlib, seaborn, UMAP
+**Training infrastructure**: Kaggle P100/T4 (16GB), AMP, gradient checkpointing
 
-**v06 — Hybrid LightGBM (cosine val mAP: 0.5104, full mAP: 0.8603)**
-- ConvNeXt-Small + ArcFace with **light** augmentation (reverted from v05 heavy aug)
-- Light aug model improves cosine val mAP: 0.5046 (v04) → 0.5104 (+0.006)
-- LightGBM on 571-dim pairwise features (cosine, L2, |emb_i−emb_j|, colour histogram diffs)
-- Result: LightGBM (0.4908) < cosine (0.5104) — ArcFace embeddings already encode optimal similarity
-- LightGBM early-stopped at 100 iterations — no additional structure beyond cosine found
-- Key insight: for closed-set re-ID with well-trained ArcFace, cosine is the optimal pairwise measure
-
-![Per-identity AP v06](figures/v06_per_identity_ap.png)
-![Feature importance v06](figures/v06_feature_importance.png)
-
-**v05 — Heavy augmentation + 5-view TTA (full mAP: 0.8576)**
-- ConvNeXt-Small + heavy aug: RandomRotation(10°), aggressive ColorJitter, RandomErasing(p=0.25)
-- 5-view TTA: centre crop, hflip, top-left, top-right, bottom-centre crops → averaged embeddings
-- TTA boost: val mAP 0.4848 → 0.4916 (+0.007) | Full train mAP: 0.8576 (+0.019 over v04)
-- Leaderboard: **0.795** (marginal regression vs v04 0.797) | Best: Marcela | Worst: Akaloi
-- Heavy aug may slightly over-regularise for this small dataset (1,895 images)
-
-![Per-identity AP v05](figures/v05_per_identity_ap.png)
-![t-SNE v05](figures/v05_tsne.png)
-
-**v04 — Backbone search: ConvNeXt-Small wins (full mAP: 0.8382)**
-- Compared tf_efficientnetv2_s (0.689), convnext_small (0.838), vit_small_patch16_224 (0.562)
-- All use same ArcFace(m=0.5, s=30) + 512-dim projection + image caching + AMP
-- Leaderboard: 0.797 (+32% over v03) | Best: Estella | Worst: Saseka
-- Total training time: 23 min for 3 backbones (vs expected ~25h without caching)
-
-![Backbone comparison](figures/v04_backbone_comparison.png)
-
-**v03 — ArcFace metric learning (CV mAP: 0.6829 full train / 0.4431 val fold)**
-- EfficientNet-B0 + projection 1280→512 (Linear+BN) + ArcFace(m=0.5, s=30)
-- Two-stage: 5 epochs head-only + 30 epochs full fine-tune | backbone lr=1e-5, head lr=1e-3
-- Leaderboard: 0.609 (+47% over v02) | Best: Lua | Worst: Ipepo
-
-![Training curves v03](figures/v03_training_curves.png)
-![Per-identity AP v03](figures/v03_per_identity_ap.png)
-![t-SNE v03](figures/v03_tsne.png)
-
-**v02 — Fine-tuned 31-class classifier (CV mAP: 0.4821 val / 0.5258 full train)**
-- Two-stage fine-tuning: 5 epochs head-only + 25 epochs full fine-tune
-- Differential LR: backbone 1e-4, head 1e-3 | CrossEntropy with label_smoothing=0.1
-- Leaderboard: 0.414 | Best identity: Tomas | Worst: Saseka
-- +73% improvement over frozen baseline
-
-![Training curves](figures/v02_training_curves.png)
-![Per-identity AP v02](figures/v02_per_identity_ap.png)
-![t-SNE v02](figures/v02_tsne.png)
-
-**v01 — Frozen EfficientNet-B0 baseline (CV mAP: 0.2781)**
-- ImageNet pretrained features, no fine-tuning, cosine similarity
-- Best identity: Katniss (AP = 0.569) | Worst: Patricia (AP = 0.080)
-- Establishes performance floor; confirms spot-pattern signal exists in ImageNet features
-
-![Per-identity AP](figures/v01_per_identity_ap.png)
-![t-SNE embeddings](figures/v01_tsne.png)
-
-## Dataset
-
-- **31 jaguars** with 13–183 training images each
-- Images are background-removed cutouts (SAM3 preprocessing)
-- Significant class imbalance — evaluation metric compensates via identity-balanced averaging
-- Closed-set: all test identities appear in training
-
-## Tech Stack
-
-PyTorch, timm, torchvision, scikit-learn, XGBoost/LightGBM, matplotlib, UMAP
+---
 
 ## Author
 
-Alexy Louis
+Alexy Louis — [GitHub](https://github.com/Smooth-Cactus0)
+
+Most notebooks in this project were built with [Claude Sonnet 4.6](https://www.anthropic.com/claude).
